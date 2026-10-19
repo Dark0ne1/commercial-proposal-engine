@@ -1,0 +1,25 @@
+# Include limit_req_zone in http {}; server snippet assumes TLS is configured.
+limit_req_zone $binary_remote_addr zone=proposal_login:10m rate=5r/m;
+server {
+    listen 443 ssl;
+    server_name proposal.example.test;
+    # ssl_certificate /path/to/fullchain.pem;
+    # ssl_certificate_key /path/to/privkey.pem;
+    client_max_body_size 256k;
+    location = /api/login {
+        limit_req zone=proposal_login burst=5 nodelay;
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+    }
+    location = /api/inquiries/import {
+        client_max_body_size 12m;
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_read_timeout 130s;
+    }
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_read_timeout 130s;
+    }
+}

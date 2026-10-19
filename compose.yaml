@@ -1,0 +1,103 @@
+services:
+  db:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: proposal
+      POSTGRES_USER: proposal
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proposal -d proposal"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  migrate:
+    build: ./backend
+    environment: &backend_env
+      DATABASE_URL: postgresql+psycopg://proposal:${POSTGRES_PASSWORD}@db:5432/proposal
+      STORAGE_DIR: /app/storage
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:3000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      VAT_RATE: ${VAT_RATE:-20}
+      MAX_DISCOUNT: ${MAX_DISCOUNT:-15}
+      VALIDITY_DAYS: ${VALIDITY_DAYS:-14}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:?Set DEMO_PASSWORD in .env}
+      REDIS_URL: redis://redis:6379/0
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-30}
+      AGENT_TIMEOUT: ${AGENT_TIMEOUT:-120}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-20}
+      RENDER_TIMEOUT: ${RENDER_TIMEOUT:-90}
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+  api:
+    build: ./backend
+    environment: *backend_env
+    volumes:
+      - documents:/app/storage
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+  web:
+    build: ./frontend
+    environment:
+      API_INTERNAL_URL: http://api:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  redis:
+    image: redis:7.4-bookworm
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  worker:
+    build: ./backend
+    command: ["python", "worker.py"]
+    environment: *backend_env
+    volumes:
+      - documents:/app/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "worker_health.py"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    mem_limit: 1g
+    restart: unless-stopped
+volumes:
+  postgres_data:
+  documents:
+  redis_data:
